@@ -48,7 +48,6 @@ const groupsListCache = [];
 const userCallSession = new Map();
 const folderCounters = {};
 
-// --- מנגנון השהיה אנושי חכם (3 עד 9 שניות לכל היותר) + חיווי הקלדה ---
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function getRandomDelay(minMs = 3000, maxMs = 9000) {
@@ -145,8 +144,6 @@ async function initDatabaseAndAuth(mongoUri) {
 
         const cfg = await db.collection('settings').findOne({ _id: 'tzintuk' });
         if (cfg && cfg.phone && !TZINTUK_PHONE) TZINTUK_PHONE = cfg.phone;
-
-        console.log(`[MongoDB] Loaded ${contactsList.length} contacts, ${privateInbox.length} incoming, ${sentOutbox.length} sent.`);
     } catch (e) {
         console.warn('[MongoDB Load Warning]:', e.message);
     }
@@ -252,9 +249,7 @@ async function triggerYemotTzintuk(senderName) {
             const url2 = `${YM}RunTzintuk?token=${encodeURIComponent(TOKEN)}&phones=tzl:${encodeURIComponent(cleanTarget)}`;
             await fetchWithTimeout(url2, {}, 8000);
         }
-    } catch (e) {
-        console.warn('[Tzintuk Warning]:', e.message);
-    }
+    } catch (e) { }
 }
 
 async function getNextFileNumberStr(folder) {
@@ -294,9 +289,7 @@ async function uploadTtsToYemotFolder(folder, ttsText) {
         form.append('convertAudio', '0');
         form.append('file', new Blob([Buffer.from(ttsText, 'utf8')], { type: 'text/plain; charset=utf-8' }), `${nextNum}.tts`);
         await fetchWithTimeout(`${YM}UploadFile`, { method: 'POST', body: form }, 10000);
-    } catch (e) {
-        console.warn('[Yemot Upload TTS Warning]:', e.message);
-    }
+    } catch (e) {}
 }
 
 async function getFastGeminiModels() {
@@ -592,7 +585,7 @@ app.get('/', (req, res) => {
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>לוח בקרה ואנשי קשר - ווצאפ ימות המשיח v2.1</title>
+<title>לוח בקרה ואנשי קשר - ווצאפ ימות המשיח v2.2</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f4f7f6;color:#1e2925;max-width:680px;margin:24px auto;padding:16px}
 .card{background:#fff;padding:20px;border-radius:12px;border:1px solid #dce5e1;margin-bottom:16px}
@@ -605,6 +598,473 @@ ul{padding-right:20px;line-height:1.7}
 </head>
 <body>
 <div class="card" style="text-align:center">
-<h2>מערכת ווצאפ קולית לימות המשיח (גרסה 2.1 Pro)</h2>
+<h2>מערכת ווצאפ קולית לימות המשיח (גרסה 2.2 Pro)</h2>
 <div class="status">${waStatus}</div>
-${latestQrDataUrl ? `<p>סרוק את קוד ה-QR מהווצאפ שלך:</p><img class="qr" src="${latestQrDataUrl}"><script>setTimeout(()=>location.reload(),7000);
+${latestQrDataUrl ? `<p>סרוק את קוד ה-QR מהווצאפ שלך:</p><img class="qr" src="${latestQrDataUrl}"><script>setTimeout(()=>location.reload(),7000);<\\/script>` : `<p>נכנסות (שלוחה 2): <b>${privateInbox.length}</b> | קבוצות (שלוחה 3): <b>${groupInbox.length}</b> | נשלחו (שלוחה 5): <b>${sentOutbox.length}</b> | אנשי קשר (שלוחה 6): <b>${contactsList.length}</b></p>`}
+</div>
+
+<div class="card">
+<h3>הוספת איש קשר חדש (זמין מיד בשלוחות 1, 4, 6)</h3>
+<input id="cn" placeholder="שם איש הקשר (למשל: אבא / משה)" style="width:45%">
+<input id="cp" placeholder="מספר טלפון (050...)" style="width:35%">
+<button onclick="addContact()">הוסף</button>
+<h4>רשימת אנשי הקשר השמורים:</h4>
+<ul>${contactsHtml}</ul>
+</div>
+
+<div class="card">
+<h3>הגדרת מספר לצינתוק בהודעה פרטית חדשה</h3>
+<input id="tz" value="${TZINTUK_PHONE}" placeholder="0501234567" style="width:60%">
+<button onclick="saveTz()">שמור מספר לצינתוק</button>
+</div>
+
+<div class="card">
+<h3>5 הודעות פרטיות אחרונות שהתקבלו (שלוחה 2):</h3>
+<ul>${recentPrivateHtml}</ul>
+</div>
+
+<script>
+async function addContact(){
+    const name = document.getElementById('cn').value.trim();
+    const phone = document.getElementById('cp').value.trim();
+    if(!name || !phone) return alert('נא למלא שם ומספר');
+    await fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,phone})});
+    location.reload();
+}
+async function saveTz(){
+    const phone = document.getElementById('tz').value.trim();
+    await fetch('/api/tzintuk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+    alert('מספר הצינתוק נשמר!');
+    location.reload();
+}
+<\\/script>
+</body></html>`);
+});
+
+const MAIN_MENU_PROMPT = 'ברוכים הבאים לוואטסאפ הקולי! לשליחת הודעה הקישו 1, לשמיעת הודעות שנשלחו אליכם הקישו 2, לקבוצות הקישו 3, לשיחה בזמן אמת הקישו 4, לשמיעת ההודעות שאתם שלחתם הקישו 5, לאנשי קשר הקישו 6, ליציאה הקישו 0';
+
+app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
+    const q = { ...req.query, ...req.body };
+    res.type('text/plain; charset=utf-8');
+
+    try {
+        const callerPhone = lastVal(q.ApiPhone).replace(/[^0-9]/g, '') || 'guest';
+        const callId = lastVal(q.ApiCallId) || callerPhone;
+        const routeMode = req.params.mode || lastVal(q.mode) || '';
+
+        if (q.hangup === 'yes') {
+            userCallSession.delete(callId);
+            return res.send('noop');
+        }
+
+        if (!sock) {
+            return res.send('id_list_message=t-שרת הווצאפ ממתין לסריקת ברקוד&go_to_folder=..');
+        }
+
+        let session = userCallSession.get(callId);
+        const menuChoice = lastVal(q.MenuChoice);
+        const sendMode = lastVal(q.SendMode);
+        const contactPick = lastVal(q.ContactPick);
+        const targetPhone = lastVal(q.TargetPhone);
+        const recPath = lastVal(q.RecPath);
+        const inboxAct = lastVal(q.InboxAct);
+        const groupChoice = lastVal(q.GroupChoice);
+        const groupAct = lastVal(q.GroupAct);
+        const liveChoice = lastVal(q.LiveChoice);
+        const liveAct = lastVal(q.LiveAct);
+        const sentAct = lastVal(q.SentAct);
+        const contactAct = lastVal(q.ContactAct);
+        const newContactPhone = lastVal(q.NewContactPhone);
+        const newContactNameRec = lastVal(q.NewContactNameRec);
+
+        const tempRecFolder = `/users/${callerPhone}/temp`;
+
+        if (!session || (routeMode && session.lastRouteMode !== routeMode && !menuChoice && !sendMode && !contactPick && !targetPhone && !recPath && !inboxAct && !groupChoice && !groupAct && !liveChoice && !liveAct && !sentAct && !contactAct && !newContactPhone && !newContactNameRec)) {
+            session = { step: 'MAIN_MENU', msgIdx: 0, grpIdx: 0, cntIdx: 0, lastRouteMode: routeMode };
+            if (routeMode === '1') session.step = 'EXT1_START';
+            else if (routeMode === '2') session.step = 'EXT2_START';
+            else if (routeMode === '3') session.step = 'EXT3_START';
+            else if (routeMode === '4') session.step = 'EXT4_START';
+            else if (routeMode === '5') session.step = 'EXT5_START';
+            else if (routeMode === '6') session.step = 'EXT6_START';
+            userCallSession.set(callId, session);
+        }
+
+        if (session.step === 'MAIN_MENU' && menuChoice) {
+            if (menuChoice === '1') session.step = 'EXT1_START';
+            else if (menuChoice === '2') session.step = 'EXT2_START';
+            else if (menuChoice === '3') session.step = 'EXT3_START';
+            else if (menuChoice === '4') session.step = 'EXT4_START';
+            else if (menuChoice === '5') session.step = 'EXT5_START';
+            else if (menuChoice === '6') session.step = 'EXT6_START';
+            else if (menuChoice === '0' || menuChoice === '*') {
+                userCallSession.delete(callId);
+                return res.send('go_to_folder=..');
+            }
+        }
+
+        // שלוחה 1: שליחת הודעה
+        if (session.step === 'EXT1_START') {
+            if (contactsList.length > 0) {
+                session.step = 'EXT1_CHOOSE_METHOD';
+                return res.send('read=t-שלוחה 1 לבחירת איש קשר מהרשימה הקישו 1, להקשת מספר טלפון הקישו 2, לחזרה הקישו 0=SendMode,no,1,1,7,Digits,no');
+            } else {
+                session.step = 'EXT1_WAIT_PHONE';
+                return res.send('read=t-שלוחה 1 אנא הקישו את מספר הטלפון של הנמען ובסיום הקישו סולמית=TargetPhone,no,15,9,7,Digits,no');
+            }
+        }
+
+        if (session.step === 'EXT1_CHOOSE_METHOD' && sendMode) {
+            if (sendMode === '1') {
+                session.cntIdx = 0;
+                session.afterContactStep = 'EXT1_WAIT_RECORD';
+                session.step = 'SELECT_CONTACT_LIST';
+            } else if (sendMode === '2') {
+                session.step = 'EXT1_WAIT_PHONE';
+                return res.send('read=t-אנא הקישו את מספר הטלפון של הנמען ובסיום הקישו סולמית=TargetPhone,no,15,9,7,Digits,no');
+            } else {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+        }
+
+        if (session.step === 'SELECT_CONTACT_LIST') {
+            if (contactPick === '9') {
+                session.cntIdx = ((session.cntIdx + 7) < contactsList.length) ? (session.cntIdx + 7) : 0;
+            } else if (contactPick === '0') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            } else if (contactPick) {
+                const idx = parseInt(contactPick, 10);
+                const pageItems = contactsList.slice(session.cntIdx, session.cntIdx + 7);
+                if (!isNaN(idx) && idx >= 1 && idx <= pageItems.length) {
+                    const chosen = pageItems[idx - 1];
+                    if (session.afterContactStep === 'EXT4_LIVE_LOOP') {
+                        session.liveJid = chosen.jid;
+                        session.livePhone = chosen.phone;
+                        session.liveLabel = chosen.name;
+                        session.step = 'EXT4_LIVE_LOOP';
+                    } else {
+                        session.targetJid = chosen.jid;
+                        session.targetLabel = chosen.name;
+                        session.step = 'EXT1_WAIT_RECORD';
+                        return res.send(`read=t-נבחר ${chosen.name} אנא הקליטו את ההודעה ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
+                    }
+                }
+            }
+
+            if (session.step === 'SELECT_CONTACT_LIST') {
+                const pageItems = contactsList.slice(session.cntIdx, session.cntIdx + 7);
+                const txtOpts = pageItems.map((c, i) => `עבור ${c.name} הקישו ${i + 1}`).join(', ');
+                const moreTxt = contactsList.length > 7 ? 'לעוד אנשי קשר הקישו 9,' : '';
+                return res.send(`read=t-בחירת איש קשר: ${txtOpts}, ${moreTxt} לחזרה הקישו 0=ContactPick,no,1,1,7,Digits,no`);
+            }
+        }
+
+        if (session.step === 'EXT1_WAIT_PHONE' && targetPhone) {
+            session.targetJid = phoneToJid(targetPhone);
+            session.targetLabel = findContactName(targetPhone) || targetPhone;
+            session.step = 'EXT1_WAIT_RECORD';
+            return res.send(`read=t-אנא הקליטו את תוכן ההודעה עבור ${session.targetLabel} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
+        }
+
+        if (session.step === 'EXT1_WAIT_RECORD' && recPath) {
+            const audioBuf = await downloadRecordingFromYemot(recPath, lastVal(q.ApiExtension));
+            const transcribed = await transcribeAudioBuffer(audioBuf, 'audio/wav');
+            const cleanMsg = sanitizeForYemotTts(transcribed, 200);
+            if (!cleanMsg) {
+                session.step = 'MAIN_MENU';
+                return res.send(`id_list_message=t-לא הצלחתי לשמוע את ההקלטה אנא נסו שנית&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+            await sendWithHumanDelay(session.targetJid, cleanMsg);
+            await recordSentMessage(session.targetJid, session.targetLabel, cleanMsg);
+
+            session.step = 'MAIN_MENU';
+            return res.send(`id_list_message=t-ההודעה ${cleanMsg} נשלחה בהצלחה אל ${session.targetLabel}&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+        }
+
+        // שלוחה 2: הודעות נכנסות
+        if (session.step === 'EXT2_START') {
+            session.msgIdx = 0;
+            session.step = 'EXT2_BROWSE';
+        }
+
+        if (session.step === 'EXT2_BROWSE') {
+            if (inboxAct === '1') {
+                const currentMsg = privateInbox[session.msgIdx];
+                if (currentMsg) {
+                    session.targetJid = currentMsg.jid;
+                    session.targetLabel = currentMsg.senderName;
+                    session.step = 'EXT1_WAIT_RECORD';
+                    return res.send(`read=t-הקליטו כעת את תשובתכם עבור ${currentMsg.senderName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_reply,no,7,1`);
+                }
+            } else if (inboxAct === '2') {
+                session.msgIdx++;
+            } else if (inboxAct === '3' && session.msgIdx > 0) {
+                session.msgIdx--;
+            } else if (inboxAct === '4') {
+                const currentMsg = privateInbox[session.msgIdx];
+                if (currentMsg) {
+                    session.liveJid = currentMsg.jid;
+                    session.livePhone = currentMsg.phone;
+                    session.liveLabel = currentMsg.senderName;
+                    session.step = 'EXT4_LIVE_LOOP';
+                }
+            } else if (inboxAct === '0' || inboxAct === '*') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+
+            if (session.step === 'EXT2_BROWSE') {
+                if (privateInbox.length === 0) {
+                    session.step = 'MAIN_MENU';
+                    return res.send(`id_list_message=t-עדיין לא התקבלו הודעות פרטיות חדשות&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+                }
+                if (session.msgIdx >= privateInbox.length) session.msgIdx = 0;
+                const item = privateInbox[session.msgIdx];
+                const cName = findContactName(item.phone || item.jid) || item.senderName;
+                const promptText = `הודעה ${session.msgIdx + 1} מתוך ${privateInbox.length}, מאת ${cName} בשעה ${item.time}: ${item.text}. למענה מהיר הקישו 1, להודעה הבאה הקישו 2, להודעה הקודמת הקישו 3, למעבר לשיחה חיה עם שולח זה הקישו 4, לתפריט הקישו 0`;
+                return res.send(`read=t-${promptText}=InboxAct,no,1,1,7,Digits,no`);
+            }
+        }
+
+        // שלוחה 3: קבוצות
+        if (session.step === 'EXT3_START') {
+            if (groupsListCache.length === 0) await refreshGroupsCache();
+            session.grpIdx = 0;
+            session.step = 'EXT3_MENU';
+            return res.send('read=t-שלוחה 3 קבוצות ווצאפ לשמיעת ההודעות מהקבוצות הקישו 1, לבחירת קבוצה ושליחת הודעה הקישו 2, לתפריט הקישו 0=GroupAct,no,1,1,7,Digits,no');
+        }
+
+        if (session.step === 'EXT3_MENU' && groupAct) {
+            if (groupAct === '1') {
+                session.msgIdx = 0;
+                session.step = 'EXT3_LISTEN_MSGS';
+            } else if (groupAct === '2') {
+                session.grpIdx = 0;
+                session.step = 'EXT3_SELECT_GROUP';
+            } else {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+        }
+
+        if (session.step === 'EXT3_LISTEN_MSGS') {
+            if (groupChoice === '1') {
+                const cur = groupInbox[session.msgIdx];
+                if (cur) {
+                    session.targetJid = cur.jid;
+                    session.targetLabel = cur.groupName;
+                    session.step = 'EXT1_WAIT_RECORD';
+                    return res.send(`read=t-הקליטו את ההודעה לקבוצת ${cur.groupName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_grp_reply,no,7,1`);
+                }
+            } else if (groupChoice === '2') {
+                session.msgIdx++;
+            } else if (groupChoice === '0') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+            if (groupInbox.length === 0) {
+                session.step = 'MAIN_MENU';
+                return res.send(`id_list_message=t-אין הודעות חדשות בקבוצות&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+            if (session.msgIdx >= groupInbox.length) session.msgIdx = 0;
+            const gItem = groupInbox[session.msgIdx];
+            const gText = `בקבוצת ${gItem.groupName} בשעה ${gItem.time} כתב ${gItem.senderName}: ${gItem.text}. לתגובה לקבוצה הקישו 1, להודעה הבאה הקישו 2, לתפריט הקישו 0`;
+            return res.send(`read=t-${gText}=GroupChoice,no,1,1,7,Digits,no`);
+        }
+
+        if (session.step === 'EXT3_SELECT_GROUP') {
+            if (groupsListCache.length === 0) {
+                session.step = 'MAIN_MENU';
+                return res.send(`id_list_message=t-לא נמצאו קבוצות&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+            if (groupChoice === '9') {
+                session.grpIdx = ((session.grpIdx + 7) < groupsListCache.length) ? (session.grpIdx + 7) : 0;
+            } else if (groupChoice === '0') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            } else if (groupChoice) {
+                const pick = parseInt(groupChoice, 10);
+                const pageSlice = groupsListCache.slice(session.grpIdx, session.grpIdx + 7);
+                if (!isNaN(pick) && pick >= 1 && pick <= pageSlice.length) {
+                    const chosenGrp = pageSlice[pick - 1];
+                    session.targetJid = chosenGrp.jid;
+                    session.targetLabel = chosenGrp.name;
+                    session.step = 'EXT1_WAIT_RECORD';
+                    return res.send(`read=t-נבחרה קבוצת ${chosenGrp.name} הקליטו את ההודעה ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_grp_send,no,7,1`);
+                }
+            }
+            const pageGroups = groupsListCache.slice(session.grpIdx, session.grpIdx + 7);
+            const parts = pageGroups.map((g, i) => `לקבוצת ${g.name} הקישו ${i + 1}`);
+            const moreTxt = (groupsListCache.length > 7) ? 'לקבוצות נוספות הקישו 9' : '';
+            return res.send(`read=t-בחירת קבוצה: ${parts.join(', ')} ${moreTxt} לחזרה הקישו 0=GroupChoice,no,1,1,7,Digits,no`);
+        }
+
+        // שלוחה 4: שיחה חיה
+        if (session.step === 'EXT4_START') {
+            session.step = 'EXT4_CHOOSE_TARGET';
+            return res.send('read=t-שלוחה 4 שיחה חיה בזמן אמת! לשיחה עם הפונה האחרון ששלח לכם הודעה הקישו 1, לבחירה מרשימת אנשי הקשר הקישו 2, להקשת מספר טלפון הקישו 3, לתפריט הקישו 0=LiveChoice,no,1,1,7,Digits,no');
+        }
+
+        if (session.step === 'EXT4_CHOOSE_TARGET' && liveChoice) {
+            if (liveChoice === '1' && privateInbox.length > 0) {
+                session.liveJid = privateInbox[0].jid;
+                session.livePhone = privateInbox[0].phone;
+                session.liveLabel = findContactName(privateInbox[0].phone) || privateInbox[0].senderName;
+                session.step = 'EXT4_LIVE_LOOP';
+            } else if (liveChoice === '2' && contactsList.length > 0) {
+                session.cntIdx = 0;
+                session.afterContactStep = 'EXT4_LIVE_LOOP';
+                session.step = 'SELECT_CONTACT_LIST';
+                const pageItems = contactsList.slice(0, 7);
+                const txtOpts = pageItems.map((c, i) => `עבור ${c.name} הקישו ${i + 1}`).join(', ');
+                return res.send(`read=t-בחירת איש קשר לשיחה חיה: ${txtOpts}, לחזרה הקישו 0=ContactPick,no,1,1,7,Digits,no`);
+            } else if (liveChoice === '3' || (liveChoice === '1' && privateInbox.length === 0) || (liveChoice === '2' && contactsList.length === 0)) {
+                session.step = 'EXT4_WAIT_PHONE';
+                return res.send('read=t-הקישו את מספר הטלפון לשיחה חיה ובסיום הקישו סולמית=TargetPhone,no,15,9,7,Digits,no');
+            } else {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+        }
+
+        if (session.step === 'EXT4_WAIT_PHONE' && targetPhone) {
+            session.livePhone = normalizeIsraeliPhone(targetPhone);
+            session.liveJid = phoneToJid(targetPhone);
+            session.liveLabel = findContactName(session.livePhone) || targetPhone;
+            session.step = 'EXT4_LIVE_LOOP';
+        }
+
+        if (session.step === 'EXT4_LIVE_LOOP') {
+            if (liveAct === '1') {
+                session.step = 'EXT4_WAIT_REC';
+                return res.send(`read=t-הקליטו כעת את הודעתכם עבור ${session.liveLabel} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_live,no,7,1`);
+            } else if (liveAct === '0' || liveAct === '*') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+
+            const targetPh = normalizeIsraeliPhone(session.livePhone || session.liveJid.split('@')[0]);
+            const incomingFromTarget = privateInbox.filter(m => normalizeIsraeliPhone(m.phone || m.jid.split('@')[0]) === targetPh);
+            const sentToTarget = sentOutbox.filter(m => normalizeIsraeliPhone(m.jid.split('@')[0]) === targetPh);
+
+            let statusConversation = '';
+            if (incomingFromTarget.length > 0) {
+                const lastIn = incomingFromTarget[0];
+                statusConversation += `הודעה אחרונה מאת ${session.liveLabel} בשעה ${lastIn.time}: ${lastIn.text}. `;
+            } else {
+                statusConversation += `אין הודעות נכנסות חדשות מאת ${session.liveLabel}. `;
+            }
+            if (sentToTarget.length > 0) {
+                statusConversation += `הודעה אחרונה שאתם שלחתם בשעה ${sentToTarget[0].time}: ${sentToTarget[0].text}. `;
+            }
+
+            return res.send(`read=t-שיחה חיה עם ${session.liveLabel}. ${statusConversation} להקלטת תגובה הקישו 1, לרענון ובדיקה אם התקבלה תשובה חדשה כעת הקישו 2, ליציאה הקישו 0=LiveAct,no,1,1,7,Digits,no`);
+        }
+
+        if (session.step === 'EXT4_WAIT_REC' && recPath) {
+            const audioBuf = await downloadRecordingFromYemot(recPath, lastVal(q.ApiExtension));
+            const transcribed = await transcribeAudioBuffer(audioBuf, 'audio/wav');
+            const cleanMsg = sanitizeForYemotTts(transcribed, 200);
+            if (cleanMsg) {
+                await sendWithHumanDelay(session.liveJid, cleanMsg);
+                await recordSentMessage(session.liveJid, session.liveLabel, cleanMsg);
+            }
+            session.step = 'EXT4_LIVE_LOOP';
+
+            const targetPh = normalizeIsraeliPhone(session.livePhone || session.liveJid.split('@')[0]);
+            const latestIn = privateInbox.find(m => normalizeIsraeliPhone(m.phone || m.jid.split('@')[0]) === targetPh);
+            const replyInfo = (latestIn && (Date.now() - latestIn.timestamp < 15000))
+                ? `התקבלה תשובה חדשה כעת מאת ${session.liveLabel}: ${latestIn.text}.`
+                : `נשלח: ${cleanMsg || 'לא זוהה דיבור'}.`;
+
+            return res.send(`id_list_message=t-${replyInfo}&read=t-להקלטת הודעה נוספת הקישו 1, לבדיקת תגובה חדשה הקישו 2, ליציאה הקישו 0=LiveAct,no,1,1,7,Digits,no`);
+        }
+
+        // שלוחה 5: הודעות יוצאות ששלחתי
+        if (session.step === 'EXT5_START') {
+            session.msgIdx = 0;
+            session.step = 'EXT5_BROWSE';
+        }
+
+        if (session.step === 'EXT5_BROWSE') {
+            if (sentAct === '1') {
+                const cur = sentOutbox[session.msgIdx];
+                if (cur) {
+                    session.targetJid = cur.jid;
+                    session.targetLabel = cur.targetName;
+                    session.step = 'EXT1_WAIT_RECORD';
+                    return res.send(`read=t-הקליטו הודעה נוספת עבור ${cur.targetName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
+                }
+            } else if (sentAct === '2') {
+                session.msgIdx++;
+            } else if (sentAct === '3' && session.msgIdx > 0) {
+                session.msgIdx--;
+            } else if (sentAct === '0' || sentAct === '*') {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+
+            if (sentOutbox.length === 0) {
+                session.step = 'MAIN_MENU';
+                return res.send(`id_list_message=t-עדיין לא נשלחו הודעות מהמערכת&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+            if (session.msgIdx >= sentOutbox.length) session.msgIdx = 0;
+            const sItem = sentOutbox[session.msgIdx];
+            const sPrompt = `הודעה יוצאת ${session.msgIdx + 1} מתוך ${sentOutbox.length}. שלחתם אל ${sItem.targetName} בשעה ${sItem.time}: ${sItem.text}. לשליחת הודעה נוספת אליו הקישו 1, להודעה הבאה ששלחתם הקישו 2, להודעה הקודמת הקישו 3, לתפריט הקישו 0`;
+            return res.send(`read=t-${sPrompt}=SentAct,no,1,1,7,Digits,no`);
+        }
+
+        // שלוחה 6: ניהול אנשי קשר
+        if (session.step === 'EXT6_START') {
+            session.step = 'EXT6_MENU';
+            return res.send('read=t-שלוחה 6 אנשי קשר! לשמיעת רשימת אנשי הקשר ובחירה לשליחה הקישו 1, להוספת איש קשר חדש דרך הטלפון הקישו 2, לתפריט הראשי הקישו 0=ContactAct,no,1,1,7,Digits,no');
+        }
+
+        if (session.step === 'EXT6_MENU' && contactAct) {
+            if (contactAct === '1') {
+                if (contactsList.length === 0) {
+                    session.step = 'EXT6_WAIT_PHONE';
+                    return res.send('id_list_message=t-רשימת אנשי הקשר ריקה כעת&read=t-להוספת איש קשר ראשון הקישו את מספר הטלפון שלו ובסיום סולמית=NewContactPhone,no,15,9,7,Digits,no');
+                }
+                session.cntIdx = 0;
+                session.afterContactStep = 'EXT1_WAIT_RECORD';
+                session.step = 'SELECT_CONTACT_LIST';
+                const pageItems = contactsList.slice(0, 7);
+                const txtOpts = pageItems.map((c, i) => `עבור ${c.name} הקישו ${i + 1}`).join(', ');
+                return res.send(`read=t-רשימת אנשי הקשר: ${txtOpts}, לחזרה הקישו 0=ContactPick,no,1,1,7,Digits,no`);
+            } else if (contactAct === '2') {
+                session.step = 'EXT6_WAIT_PHONE';
+                return res.send('read=t-הוספת איש קשר חדש אנא הקישו את מספר הטלפון של איש הקשר ובסיום הקישו סולמית=NewContactPhone,no,15,9,7,Digits,no');
+            } else {
+                session.step = 'MAIN_MENU';
+                return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+            }
+        }
+
+        if (session.step === 'EXT6_WAIT_PHONE' && newContactPhone) {
+            session.newContactPhone = normalizeIsraeliPhone(newContactPhone);
+            session.step = 'EXT6_WAIT_NAME_REC';
+            return res.send(`read=t-נקלט מספר ${session.newContactPhone}, כעת אמרו בקולכם את שם איש הקשר ובסיום הקישו סולמית=NewContactNameRec,no,record,${tempRecFolder},contact_name,no,7,1`);
+        }
+
+        if (session.step === 'EXT6_WAIT_NAME_REC' && newContactNameRec) {
+            const audioBuf = await downloadRecordingFromYemot(newContactNameRec, lastVal(q.ApiExtension));
+            const transcribedName = await transcribeAudioBuffer(audioBuf, 'audio/wav');
+            const cleanName = sanitizeForYemotTts(transcribedName, 35) || `איש קשר ${contactsList.length + 1}`;
+            await saveContact(cleanName, session.newContactPhone);
+            session.step = 'MAIN_MENU';
+            return res.send(`id_list_message=t-איש הקשר ${cleanName} עם מספר ${session.newContactPhone} נשמר בהצלחה במערכת&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+        }
+
+        return res.send(`read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+
+    } catch (e) {
+        console.error('[Yemot WhatsApp Error]:', e.message);
+        return res.send(`id_list_message=t-אירעה שגיאה זמנית&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
+    }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`=== Yemot WhatsApp Pro v2.2 Server Ready on port ${port} ===`));
