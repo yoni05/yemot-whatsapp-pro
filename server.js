@@ -1,5 +1,4 @@
 const express = require('express');
-const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const pino = require('pino');
@@ -30,7 +29,6 @@ app.use((req, res, next) => {
 const TOKEN = (process.env.YEMOT_TOKEN || '').trim();
 const GEMINI_KEY = (process.env.GEMINI_API_KEY || '').trim();
 const MONGODB_URI = (process.env.MONGODB_URI || '').trim();
-let TZINTUK_PHONE = (process.env.TZINTUK_PHONE || '').trim();
 const YM = 'https://www.call2all.co.il/ym/api/';
 
 let sock = null;
@@ -44,6 +42,7 @@ const sentOutbox = [];
 const groupInbox = [];
 const contactsList = [];
 const lidToPhoneMap = new Map();
+const lastUnreadKeyByJid = new Map();
 const groupsListCache = [];
 const userCallSession = new Map();
 const folderCounters = {};
@@ -54,17 +53,46 @@ function getRandomDelay(minMs = 3000, maxMs = 9000) {
     return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 }
 
-async function sendWithHumanDelay(targetJid, textMsg) {
+// --- סימון "וי כחול" (Read Receipts) להודעות שנקראו ---
+async function markMessageAsRead(targetJid, explicitKey = null) {
+    if (!sock) return;
+    try {
+        const keyToRead = explicitKey || lastUnreadKeyByJid.get(targetJid);
+        if (keyToRead && keyToRead.id) {
+            await sock.readMessages([keyToRead]);
+            lastUnreadKeyByJid.delete(targetJid);
+            console.log(`[Blue Tick] Marked message ${keyToRead.id} from ${targetJid} as read.`);
+        }
+    } catch (e) {
+        console.warn('[Blue Tick Warning]:', e.message);
+    }
+}
+
+// --- מנגנון השהיה אנושי חכם (עד 9 שניות) + וי כחול + חיווי הקלדה ---
+async function sendWithHumanDelay(targetJid, textMsg, explicitKey = null) {
     if (!sock) throw new Error('WhatsApp socket not connected');
-    const delayMs = getRandomDelay(3000, 9000);
-    console.log(`[Human Delay] Simulating typing to ${targetJid} for ${delayMs}ms (max 9s)...`);
+    const totalDelayMs = getRandomDelay(3000, 9000);
+    const readPauseMs = Math.min(1800, Math.floor(totalDelayMs * 0.3));
+    const typingDelayMs = Math.max(1500, totalDelayMs - readPauseMs);
+
+    try {
+        await sock.sendPresenceUpdate('available', targetJid);
+        await markMessageAsRead(targetJid, explicitKey);
+    } catch {}
+
+    await wait(readPauseMs);
+
+    console.log(`[Human Delay] Simulating typing to ${targetJid} for ${typingDelayMs}ms (total ${totalDelayMs}ms)...`);
     try {
         await sock.sendPresenceUpdate('composing', targetJid);
     } catch {}
-    await wait(delayMs);
+
+    await wait(typingDelayMs);
+
     try {
         await sock.sendPresenceUpdate('paused', targetJid);
     } catch {}
+
     return await sock.sendMessage(targetJid, { text: textMsg });
 }
 
@@ -142,8 +170,7 @@ async function initDatabaseAndAuth(mongoUri) {
         groupInbox.length = 0;
         groupInbox.push(...savedGroup);
 
-        const cfg = await db.collection('settings').findOne({ _id: 'tzintuk' });
-        if (cfg && cfg.phone && !TZINTUK_PHONE) TZINTUK_PHONE = cfg.phone;
+        console.log(`[MongoDB] Loaded ${contactsList.length} contacts, ${privateInbox.length} incoming, ${sentOutbox.length} sent.`);
     } catch (e) {
         console.warn('[MongoDB Load Warning]:', e.message);
     }
@@ -236,22 +263,6 @@ async function recordSentMessage(targetJid, targetLabel, textContent) {
     uploadTtsToYemotFolder('5', `שלחתם אל ${entry.targetName} בשעה ${timeStr} את ההודעה: ${cleanText}`);
 }
 
-async function triggerYemotTzintuk(senderName) {
-    if (!TOKEN || !TZINTUK_PHONE) return;
-    const cleanTarget = normalizeIsraeliPhone(TZINTUK_PHONE);
-    if (!cleanTarget) return;
-
-    try {
-        const url1 = `${YM}SendTzintuk?token=${encodeURIComponent(TOKEN)}&phones=${encodeURIComponent(cleanTarget)}`;
-        const r1 = await fetchWithTimeout(url1, {}, 8000);
-        const t1 = await r1.text();
-        if (t1.includes('ERROR') || t1.includes('Exception')) {
-            const url2 = `${YM}RunTzintuk?token=${encodeURIComponent(TOKEN)}&phones=tzl:${encodeURIComponent(cleanTarget)}`;
-            await fetchWithTimeout(url2, {}, 8000);
-        }
-    } catch (e) { }
-}
-
 async function getNextFileNumberStr(folder) {
     const cleanFolder = String(folder || '').replace(/^ivr2:\/*/, '').replace(/^\/*/, '').replace(/\/*$/, '');
     if (folderCounters[cleanFolder] !== undefined) {
@@ -289,7 +300,9 @@ async function uploadTtsToYemotFolder(folder, ttsText) {
         form.append('convertAudio', '0');
         form.append('file', new Blob([Buffer.from(ttsText, 'utf8')], { type: 'text/plain; charset=utf-8' }), `${nextNum}.tts`);
         await fetchWithTimeout(`${YM}UploadFile`, { method: 'POST', body: form }, 10000);
-    } catch (e) {}
+    } catch (e) {
+        console.warn('[Yemot Upload TTS Warning]:', e.message);
+    }
 }
 
 async function getFastGeminiModels() {
@@ -429,7 +442,7 @@ async function startWhatsAppConnection() {
             }
             if (connection === 'open') {
                 latestQrDataUrl = null;
-                waStatus = 'מחובר ופעיל 100% (כולל אנשי קשר, השהיה עד 9 שניות וצינתוקים)';
+                waStatus = 'מחובר ופעיל 100% (כולל אנשי קשר, וי כחול והשהיה עד 9 שניות)';
                 setTimeout(refreshGroupsCache, 3000);
             }
             if (connection === 'close') {
@@ -503,12 +516,21 @@ async function startWhatsAppConnection() {
                     const msgId = rawMsg.key.id;
                     if (privateInbox.some(m => m.id === msgId) || groupInbox.some(m => m.id === msgId)) continue;
 
+                    const msgKeyObj = {
+                        remoteJid: rawMsg.key.remoteJid,
+                        id: rawMsg.key.id,
+                        fromMe: false,
+                        participant: rawMsg.key.participant || undefined
+                    };
+                    lastUnreadKeyByJid.set(remoteJid, msgKeyObj);
+
                     if (isGroup) {
                         const grpObj = groupsListCache.find(g => g.jid === remoteJid);
                         const groupTitle = grpObj ? grpObj.name : 'קבוצה';
                         const entry = {
                             id: msgId,
                             jid: remoteJid,
+                            rawKey: msgKeyObj,
                             groupName: groupTitle,
                             senderName,
                             text: cleanText,
@@ -522,6 +544,7 @@ async function startWhatsAppConnection() {
                         const entry = {
                             id: msgId,
                             jid: remoteJid,
+                            rawKey: msgKeyObj,
                             phone: phoneDigits,
                             senderName,
                             text: cleanText,
@@ -533,9 +556,6 @@ async function startWhatsAppConnection() {
                         if (db) db.collection('private_inbox').insertOne(entry).catch(() => null);
 
                         uploadTtsToYemotFolder('2', `הודעה מאת ${senderName} בשעה ${timeStr}: ${cleanText}`);
-                        if (type === 'notify') {
-                            triggerYemotTzintuk(senderName);
-                        }
                     }
                 } catch (err) {
                     console.error('[Incoming Message Error]:', err.message);
@@ -551,27 +571,20 @@ async function startWhatsAppConnection() {
 startWhatsAppConnection();
 
 app.get('/api/contacts', (req, res) => {
-    res.json({ ok: true, contacts: contactsList, tzintukPhone: TZINTUK_PHONE });
+    res.json({ ok: true, contacts: contactsList });
 });
 
 app.post('/api/contacts', async (req, res) => {
     try {
         const { name, phone } = req.body;
         const saved = await saveContact(name, phone);
-        if (!saved) return res.status(400).json({ ok: false, error: 'נא להזין שם ומספר תקינים' });
-        res.json({ ok: true, contact: saved, contacts: contactsList });
-    } catch (e) {
-        res.status(500).json({ ok: false, error: e.message });
-    }
-});
-
-app.post('/api/tzintuk', async (req, res) => {
-    try {
-        TZINTUK_PHONE = normalizeIsraeliPhone(req.body.phone || '');
-        if (db) {
-            await db.collection('settings').updateOne({ _id: 'tzintuk' }, { $set: { phone: TZINTUK_PHONE } }, { upsert: true });
+        const isJsonReq = (req.headers['content-type'] || '').includes('application/json');
+        if (!saved) {
+            if (isJsonReq) return res.status(400).json({ ok: false, error: 'נא להזין שם ומספר תקינים' });
+            return res.redirect('/');
         }
-        res.json({ ok: true, tzintukPhone: TZINTUK_PHONE });
+        if (isJsonReq) return res.json({ ok: true, contact: saved, contacts: contactsList });
+        return res.redirect('/');
     } catch (e) {
         res.status(500).json({ ok: false, error: e.message });
     }
@@ -580,12 +593,14 @@ app.post('/api/tzintuk', async (req, res) => {
 app.get('/', (req, res) => {
     const contactsHtml = contactsList.map(c => `<li><b>${c.name}</b> - ${c.phone}</li>`).join('') || '<li>עדיין לא הוגדרו אנשי קשר</li>';
     const recentPrivateHtml = privateInbox.slice(0, 5).map(m => `<li><b>${m.senderName}</b> (${m.time}): ${m.text}</li>`).join('') || '<li>אין הודעות נכנסות</li>';
+    const autoRefreshMeta = latestQrDataUrl ? '<meta http-equiv="refresh" content="7">' : '';
 
     res.type('text/html; charset=utf-8').send(`<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>לוח בקרה ואנשי קשר - ווצאפ ימות המשיח v2.2</title>
+${autoRefreshMeta}
+<title>לוח בקרה ואנשי קשר - ווצאפ ימות המשיח v2.1</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f4f7f6;color:#1e2925;max-width:680px;margin:24px auto;padding:16px}
 .card{background:#fff;padding:20px;border-radius:12px;border:1px solid #dce5e1;margin-bottom:16px}
@@ -598,46 +613,26 @@ ul{padding-right:20px;line-height:1.7}
 </head>
 <body>
 <div class="card" style="text-align:center">
-<h2>מערכת ווצאפ קולית לימות המשיח (גרסה 2.2 Pro)</h2>
+<h2>מערכת ווצאפ קולית לימות המשיח (גרסה 2.1 Pro)</h2>
 <div class="status">${waStatus}</div>
-${latestQrDataUrl ? `<p>סרוק את קוד ה-QR מהווצאפ שלך:</p><img class="qr" src="${latestQrDataUrl}"><script>setTimeout(()=>location.reload(),7000);<\\/script>` : `<p>נכנסות (שלוחה 2): <b>${privateInbox.length}</b> | קבוצות (שלוחה 3): <b>${groupInbox.length}</b> | נשלחו (שלוחה 5): <b>${sentOutbox.length}</b> | אנשי קשר (שלוחה 6): <b>${contactsList.length}</b></p>`}
+${latestQrDataUrl ? `<p>סרוק את קוד ה-QR מהווצאפ שלך (הדף מתרענן אוטומטית):</p><img class="qr" src="${latestQrDataUrl}">` : `<p>נכנסות (שלוחה 2): <b>${privateInbox.length}</b> | קבוצות (שלוחה 3): <b>${groupInbox.length}</b> | נשלחו (שלוחה 5): <b>${sentOutbox.length}</b> | אנשי קשר (שלוחה 6): <b>${contactsList.length}</b></p>`}
 </div>
 
 <div class="card">
 <h3>הוספת איש קשר חדש (זמין מיד בשלוחות 1, 4, 6)</h3>
-<input id="cn" placeholder="שם איש הקשר (למשל: אבא / משה)" style="width:45%">
-<input id="cp" placeholder="מספר טלפון (050...)" style="width:35%">
-<button onclick="addContact()">הוסף</button>
+<form method="POST" action="/api/contacts">
+<input name="name" placeholder="שם איש הקשר (למשל: אבא / משה)" style="width:45%" required>
+<input name="phone" placeholder="מספר טלפון (050...)" style="width:35%" required>
+<button type="submit">הוסף</button>
+</form>
 <h4>רשימת אנשי הקשר השמורים:</h4>
 <ul>${contactsHtml}</ul>
-</div>
-
-<div class="card">
-<h3>הגדרת מספר לצינתוק בהודעה פרטית חדשה</h3>
-<input id="tz" value="${TZINTUK_PHONE}" placeholder="0501234567" style="width:60%">
-<button onclick="saveTz()">שמור מספר לצינתוק</button>
 </div>
 
 <div class="card">
 <h3>5 הודעות פרטיות אחרונות שהתקבלו (שלוחה 2):</h3>
 <ul>${recentPrivateHtml}</ul>
 </div>
-
-<script>
-async function addContact(){
-    const name = document.getElementById('cn').value.trim();
-    const phone = document.getElementById('cp').value.trim();
-    if(!name || !phone) return alert('נא למלא שם ומספר');
-    await fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,phone})});
-    location.reload();
-}
-async function saveTz(){
-    const phone = document.getElementById('tz').value.trim();
-    await fetch('/api/tzintuk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
-    alert('מספר הצינתוק נשמר!');
-    location.reload();
-}
-<\\/script>
 </body></html>`);
 });
 
@@ -747,6 +742,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                     } else {
                         session.targetJid = chosen.jid;
                         session.targetLabel = chosen.name;
+                        session.replyKey = null;
                         session.step = 'EXT1_WAIT_RECORD';
                         return res.send(`read=t-נבחר ${chosen.name} אנא הקליטו את ההודעה ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
                     }
@@ -764,6 +760,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
         if (session.step === 'EXT1_WAIT_PHONE' && targetPhone) {
             session.targetJid = phoneToJid(targetPhone);
             session.targetLabel = findContactName(targetPhone) || targetPhone;
+            session.replyKey = null;
             session.step = 'EXT1_WAIT_RECORD';
             return res.send(`read=t-אנא הקליטו את תוכן ההודעה עבור ${session.targetLabel} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
         }
@@ -776,14 +773,14 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                 session.step = 'MAIN_MENU';
                 return res.send(`id_list_message=t-לא הצלחתי לשמוע את ההקלטה אנא נסו שנית&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
             }
-            await sendWithHumanDelay(session.targetJid, cleanMsg);
+            await sendWithHumanDelay(session.targetJid, cleanMsg, session.replyKey);
             await recordSentMessage(session.targetJid, session.targetLabel, cleanMsg);
 
             session.step = 'MAIN_MENU';
             return res.send(`id_list_message=t-ההודעה ${cleanMsg} נשלחה בהצלחה אל ${session.targetLabel}&read=t-${MAIN_MENU_PROMPT}=MenuChoice,no,1,1,7,Digits,no`);
         }
 
-        // שלוחה 2: הודעות נכנסות
+        // שלוחה 2: הודעות נכנסות (מסמן וי כחול אוטומטי בעת ההאזנה)
         if (session.step === 'EXT2_START') {
             session.msgIdx = 0;
             session.step = 'EXT2_BROWSE';
@@ -795,6 +792,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                 if (currentMsg) {
                     session.targetJid = currentMsg.jid;
                     session.targetLabel = currentMsg.senderName;
+                    session.replyKey = currentMsg.rawKey || null;
                     session.step = 'EXT1_WAIT_RECORD';
                     return res.send(`read=t-הקליטו כעת את תשובתכם עבור ${currentMsg.senderName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_reply,no,7,1`);
                 }
@@ -822,6 +820,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                 }
                 if (session.msgIdx >= privateInbox.length) session.msgIdx = 0;
                 const item = privateInbox[session.msgIdx];
+                markMessageAsRead(item.jid, item.rawKey);
                 const cName = findContactName(item.phone || item.jid) || item.senderName;
                 const promptText = `הודעה ${session.msgIdx + 1} מתוך ${privateInbox.length}, מאת ${cName} בשעה ${item.time}: ${item.text}. למענה מהיר הקישו 1, להודעה הבאה הקישו 2, להודעה הקודמת הקישו 3, למעבר לשיחה חיה עם שולח זה הקישו 4, לתפריט הקישו 0`;
                 return res.send(`read=t-${promptText}=InboxAct,no,1,1,7,Digits,no`);
@@ -855,6 +854,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                 if (cur) {
                     session.targetJid = cur.jid;
                     session.targetLabel = cur.groupName;
+                    session.replyKey = cur.rawKey || null;
                     session.step = 'EXT1_WAIT_RECORD';
                     return res.send(`read=t-הקליטו את ההודעה לקבוצת ${cur.groupName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_grp_reply,no,7,1`);
                 }
@@ -891,6 +891,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                     const chosenGrp = pageSlice[pick - 1];
                     session.targetJid = chosenGrp.jid;
                     session.targetLabel = chosenGrp.name;
+                    session.replyKey = null;
                     session.step = 'EXT1_WAIT_RECORD';
                     return res.send(`read=t-נבחרה קבוצת ${chosenGrp.name} הקליטו את ההודעה ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_grp_send,no,7,1`);
                 }
@@ -952,6 +953,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
             let statusConversation = '';
             if (incomingFromTarget.length > 0) {
                 const lastIn = incomingFromTarget[0];
+                markMessageAsRead(lastIn.jid, lastIn.rawKey);
                 statusConversation += `הודעה אחרונה מאת ${session.liveLabel} בשעה ${lastIn.time}: ${lastIn.text}. `;
             } else {
                 statusConversation += `אין הודעות נכנסות חדשות מאת ${session.liveLabel}. `;
@@ -994,6 +996,7 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
                 if (cur) {
                     session.targetJid = cur.jid;
                     session.targetLabel = cur.targetName;
+                    session.replyKey = null;
                     session.step = 'EXT1_WAIT_RECORD';
                     return res.send(`read=t-הקליטו הודעה נוספת עבור ${cur.targetName} ובסיום הקישו סולמית=RecPath,no,record,${tempRecFolder},wa_send,no,7,1`);
                 }
@@ -1067,4 +1070,4 @@ app.all(['/yemot', '/yemot/:mode'], async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`=== Yemot WhatsApp Pro v2.2 Server Ready on port ${port} ===`));
+app.listen(port, () => console.log(`=== Yemot WhatsApp Pro v2.1 Server Ready on port ${port} ===`));
